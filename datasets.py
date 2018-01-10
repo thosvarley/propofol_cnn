@@ -84,7 +84,8 @@ def data_singles(loc):
 	chips = []
 	labels = []
 	for i in pd.DataFrame.from_csv(loc).itertuples():
-		chips.append(i[1])
+		
+.		chips.append(i[1])
 		labels.append(i[2])
 	return DataSet(np.asarray(chips), np.asarray(labels))
 
@@ -95,10 +96,18 @@ def test_singles():
 	return data_singles("data/test_set.csv")
 
 def data_pairs(data, num_pairs):
-	sleep = [chip for chip in data if chip[2] == 1]
-	awake = [chip for chip in data if chip[2] == 0]
-	random.shuffle(sleep) #do something later to make this shuffle consistant or choseable
+	sleep = []
+	awake = []
+	for entry in data:
+		if entry[2] == 1:
+			awake.append(entry)
+		elif entry[2] == 0:
+			sleep.append(entry)
+
+	#If we want repeatable experiments, we'll need to use random.seed()
+	random.shuffle(sleep)
 	random.shuffle(awake)
+	
 	chips = []
 	labels = []
 	
@@ -111,6 +120,7 @@ def data_pairs(data, num_pairs):
 		b = sleep[-i]
 		c = awake[i]
 		d = awake[-i]
+
 		
 		if i%2 == 0:
 			add_pair([[a, b], 1])
@@ -163,12 +173,12 @@ def tests():
 				print "diff"	
 		last = test
    
-
+	"""
 	print "let's get a few data pairs"
-	A = train_data_pairs(1000)
+	A = train_pairs(1000)
 	for i in range(10):
 		print A.next_batch(10)
-	"""
+	
 	pass 
 
 
