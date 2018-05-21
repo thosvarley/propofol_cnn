@@ -93,7 +93,7 @@ def test_singles():
 	random.shuffle(awake)
 	merged = [j for i in zip(awake,asleep) for j in i]
 	chips, labels = zip(*merged) #zip(*) is inverse of zip()- so [(a,1), (b,2), (c,3)] -> [(a, b, c), (1, 2, 3)]
-	return DataSet(np.asarray(chips), np.asarray(labels))
+	return DataSet(np.asarray(chips), np.asarray(labels, dtype=np.float64))
 
 """ #commented out because there is no train data right now
 def train_singles():
