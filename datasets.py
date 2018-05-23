@@ -86,9 +86,9 @@ class DataSet(object):
 def test_singles():
 	#awake
 	for root, dirs, filenames in os.walk("data/test/awake"):
-		awake = [(np.load(os.path.join(root, file_)), 1) for file_ in filenames]
+		awake = [(np.load(os.path.join(root, file_)), [1,0]) for file_ in filenames]
 	for root, dirs, filenames in os.walk("data/test/asleep"):
-		asleep = [(np.load(os.path.join(root, file_)), 0) for file_ in filenames]
+		asleep = [(np.load(os.path.join(root, file_)), [0,1]) for file_ in filenames]
 	
 	random.shuffle(awake)
 	merged = [j for i in zip(awake,asleep) for j in i]
@@ -156,9 +156,9 @@ def train_pairs(num):
 
 def test_pairs(num):
 	for root, dirs, filenames in os.walk("data/test/awake"):
-		awake = [(np.load(os.path.join(root, file_)), 1) for file_ in filenames]
+		awake = [(np.load(os.path.join(root, file_)), [1., 0.]) for file_ in filenames]
 	for root, dirs, filenames in os.walk("data/test/asleep"):
-		asleep = [(np.load(os.path.join(root, file_)), 0) for file_ in filenames]
+		asleep = [(np.load(os.path.join(root, file_)), [0., 1.]) for file_ in filenames]
 
 	return data_pairs(awake, asleep, num)
 

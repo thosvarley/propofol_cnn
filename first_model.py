@@ -18,10 +18,13 @@ import numpy as np
 import graph 
 import datasets
 import re
+import os
+
+tb_path = "summaries/"
 
 class deep_cgnn(object):
 
-    def __init__(self, graph, L, inputs, batch_size):
+    def __init__(self, graph, L, inputs, batch_size, model_type="classifier"):
         self.graph = graph
             
         self.inputs = inputs #this should be a DataSet Object
@@ -32,19 +35,28 @@ class deep_cgnn(object):
 
         self.in_size = [batch_size, 234,234 ]
         self.regularizers = []
+        self.regularization = 1
+        self.learning_rate = .1
+        self.decay_steps = 100
+        self.decay_rate = 1
+        self.momentum = .9
 
         self.F = [64,64] #Features per gcnn layer
         self.p = [1,1] #pooling dim per gcnn layer
         self.K = [3,3] #K approx iters 
-        self.M = [1] #output dim
-    
-       
+        self.M = [2] #output dim
+
         self.ph_data = tf.placeholder(tf.float64, self.in_size, 'data')
-        self.ph_labels = tf.placeholder(tf.int64, [1], 'labels')
+        self.ph_labels = tf.placeholder(tf.float64, [1,2], 'labels')
         self.ph_site = tf.placeholder(tf.float64, [1], 'site')
         self.ph_dropout = tf.placeholder(tf.float64, [], 'do_rate')
 
-        self.model = self.build_model(self.ph_data)
+        logits = self.build_model(self.ph_data)
+        self.op_loss, self.op_loss_average = self.loss(logits, self.ph_labels, 0)
+        self.op_train = self.training(self.op_loss, self.learning_rate,
+                    self.decay_steps, self.decay_rate, self.momentum)
+
+        
 
     def chebyshev5(self, x, L, Fout, K):
         Fin, N, M = x.get_shape()
@@ -141,17 +153,21 @@ class deep_cgnn(object):
         x = tf.matmul(x, W) + b
         return tf.nn.relu(x) if relu else x
 
+    def gcnn_layer(self, x, i):
+        with tf.name_scope('filter'):
+            x = self.chebyshev5(x, self.L, self.F[i], self.K[i])
+        with tf.name_scope('bias_relu'):
+            x = self.b1relu(x)
+        with tf.name_scope('pooling'):
+            x = self.mpool1(x, self.p[i]) 
+        return x
+
     def build_model(self, x):
         #each gcnn layer is a chebyshev filter bank, relu, and pool.
         for i in range(len(self.p)):
             with tf.variable_scope('conv{}'.format(i + 1)):
-                with tf.name_scope('filter'):
-                    x = self.chebyshev5(x, self.L, self.F[i], self.K[i])
-                with tf.name_scope('bias_relu'):
-                    x = self.b1relu(x)
-                with tf.name_scope('pooling'):
-                    x = self.mpool1(x, self.p[i])       
-
+                x = self.gcnn_layer(x, i)
+    
         N, M, F = x.get_shape()
         x = tf.reshape(x, [int(N), int(M*F)])
 
@@ -166,24 +182,103 @@ class deep_cgnn(object):
         # Logits linear layer
         with tf.variable_scope('logits'):
             x = tf.nn.dropout(x, self.ph_dropout)
-            x = self.fc(x, self.M[-1], relu=False)
+            x = self.fc(x, self.M[0], relu=False)
 
         return tf.squeeze(x)
+        #return x
 
-    def run_model(self): #just one marble through the model
-        next_batch = self.inputs.next_batch(1)
-        with tf.Session() as sess:
-            tf.global_variables_initializer().run()
-            loss_average = sess.run(self.model, feed_dict={"data:0": next_batch[0], "labels:0": next_batch[1], "do_rate:0": .5})
-            print loss_average
+    def classification_loss(self, graph):
+        #simple classifier loss layer- compress to the labels and do cross entropy
+        with tf.variable_scope('loss'):
+            self.y = tf.nn.softmax(self.fc(graph, 2))
+
+            self.cross_entropy = tf.reduce_mean(-tf.reduce_sum(self.ph_labels * tf.log(self.y), reduction_indices=[1]))
+            tf.summary.scalar("cross_entropy", self.cross_entropy)
+            
+            self.MSE = tf.reduce_mean(tf.squared_difference(self.ph_labels, self.y))
+            tf.summary.scalar("MSE", self.MSE)
+
+            
+
+    def loss(self, logits, labels, regularization):
+        """Adds to the inference model the layers required to generate loss."""
+        with tf.name_scope('loss'):
+            with tf.name_scope('hinge_loss'):
+                labels = tf.cast(labels, tf.float64)
+                zeros = tf.zeros_like(logits, tf.float64)
+                output = tf.ones_like(labels, tf.float64) - tf.multiply(labels, logits)
+                hinge_loss = tf.where(tf.greater(output, zeros), output, zeros)
+                hinge_loss = tf.reduce_mean(hinge_loss)
+            
+            with tf.name_scope('regularization'):
+                regularization *= tf.add_n(self.regularizers)
+            loss = hinge_loss + regularization
+            
+            # Summaries for TensorBoard.
+            tf.summary.scalar('loss/hinge_loss', hinge_loss)
+            tf.summary.scalar('loss/regularization', regularization)
+            tf.summary.scalar('loss/total', loss)
+            with tf.name_scope('averages'):
+                averages = tf.train.ExponentialMovingAverage(0.9)
+                op_averages = averages.apply([hinge_loss, regularization, loss])
+                tf.summary.scalar('loss/avg/hinge_loss', averages.average(hinge_loss))
+                tf.summary.scalar('loss/avg/regularization', averages.average(regularization))
+                tf.summary.scalar('loss/avg/total', averages.average(loss))
+                with tf.control_dependencies([op_averages]):
+                    loss_average = tf.identity(averages.average(loss), name='control')
+            return loss, loss_average
+    
+    def training(self, loss, learning_rate, decay_steps, decay_rate=0.95, momentum=0.9):
+        """Adds to the loss model the Ops required to generate and apply gradients."""
+        with tf.name_scope('training'):
+            # Learning rate.
+            global_step = tf.Variable(0, name='global_step', trainable=False)
+            if decay_rate != 1:
+                learning_rate = tf.train.exponential_decay(
+                        learning_rate, global_step, decay_steps, decay_rate, staircase=True)
+                tf.summary.scalar('learning_rate', learning_rate)
+            # Optimizer.
+            if momentum == 0:
+                # optimizer = tf.train.GradientDescentOptimizer(learning_rate)
+                optimizer = tf.train.AdamOptimizer(learning_rate)
+            else:
+                optimizer = tf.train.MomentumOptimizer(learning_rate, momentum)
+            grads = optimizer.compute_gradients(loss)
+            op_gradients = optimizer.apply_gradients(grads, global_step=global_step)
+            # Histograms.
+            for grad, var in grads:
+                if grad is None:
+                    print('warning: {} has no gradient'.format(var.op.name))
+                else:
+                    tf.summary.histogram(var.op.name + '/gradients', grad)
+            # The op return the learning rate.
+            with tf.control_dependencies([op_gradients]):
+                op_train = tf.identity(learning_rate, name='control')
+            return op_train
+
 
     def train(self, iterations):
+        
+        run_number = 1 
+        full_tb_path = tb_path+"train_run"+str(run_number)
+        while os.path.exists(full_tb_path):
+            run_number += 1
+            full_tb_path = tb_path+"train_run"+str(run_number)
+        
         with tf.Session() as sess:
             tf.global_variables_initializer().run()
+            writer = tf.summary.FileWriter(full_tb_path, sess.graph)
+            self.op_summary = tf.summary.merge_all()
             for i in range(iterations):
+                print i
                 next_batch = self.inputs.next_batch(self.batch_size)
-                loss_average = sess.run(self.model, feed_dict={"data:0": next_batch[0], "labels:0": next_batch[1], "do_rate:0": .5})
 
+                inputs = {"data:0": next_batch[0], "labels:0": next_batch[1], "do_rate:0": .5}
+
+                sess.run(self.op_train, feed_dict=inputs)
+                if i%10 == 0:
+                    writer.add_summary(sess.run(self.op_summary, feed_dict=inputs), i)
+                    print i
 
 if __name__ == "__main__":
     test_data = datasets.test_singles()
@@ -194,5 +289,5 @@ if __name__ == "__main__":
     L = graph.laplacian(adj, normalized=True)
     comp_graph = tf.Graph()
     with comp_graph.as_default():
-        A = deep_cgnn(comp_graph, L, test_data, 1)
+        A = deep_cgnn(comp_graph, L, test_data, batch_size=1)
         A.train(100)
