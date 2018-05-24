@@ -283,7 +283,7 @@ class deep_cgnn(object):
 if __name__ == "__main__":
     test_data = datasets.test_singles()
     #train_data = datasets.train_singles()
-    coords = np.asarray([[float(cord) for cord in re.split("\n | ", line)] for line in open("1000_coords_3column.txt")])[:234] #haaack just to get the marble rolling
+    coords = np.asarray([[float(cord) for cord in re.split("\n | ", line)] for line in open("234_coords_3column.txt")]) #haaack just to get the marble rolling
     dist, idx = graph.distance_scipy_spatial(coords, k=10, metric="euclidean")
     adj = graph.adjacency(dist, idx).astype(np.float64)
     L = graph.laplacian(adj, normalized=True)
